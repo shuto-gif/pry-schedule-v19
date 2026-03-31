@@ -1421,6 +1421,28 @@ let activeFloors=new Set(ALL_FLOORS);
 
 let activeTasks=new Set(ALL_TASKS);
 
+function getRepoName(){
+  const ghLink=document.querySelector('.header a[href*="github.com/"]');
+  if(ghLink){
+    const match=ghLink.href.match(/github\.com\/[^/]+\/([^/?#]+)/);
+    if(match) return match[1];
+  }
+  if(location.hostname.endsWith('github.io')){
+    const seg=location.pathname.split('/').filter(Boolean)[0];
+    if(seg) return seg;
+  }
+  const keyMatch=LS_KEY.match(/^(pry-schedule(?:-v\d+)?)$/);
+  return keyMatch ? keyMatch[1] : 'pry-schedule';
+}
+
+function getSourceHtmlUrl(){
+  return location.href.split('#')[0].split('?')[0];
+}
+
+function getDownloadName(){
+  return `${document.title.replace(/\s+/g,'_')}_chart.html`;
+}
+
 function deepClone(o){return JSON.parse(JSON.stringify(o));}
 
 function encodeShareData(data){
@@ -1471,8 +1493,11 @@ function loadData(){
 async function saveAsHtml(){
   // HTMLを取得してDEFAULT_EVSを差し替え
   let html;
+  const repoName=getRepoName();
+  const downloadName=getDownloadName();
   try{
-    const res=await fetch(location.href);
+    const res=await fetch(getSourceHtmlUrl(),{cache:'no-store'});
+    if(!res.ok) throw new Error('FETCH '+res.status);
     html=await res.text();
     const newEvs=JSON.stringify(evs,null,2);
     html=html.replace(/const DEFAULT_EVS = \[[\s\S]*?\n\];/,`const DEFAULT_EVS = ${newEvs};`);
@@ -1486,13 +1511,21 @@ async function saveAsHtml(){
     localStorage.setItem('gh-pat',pat);
   }
 
-  const apiUrl='https://api.github.com/repos/shuto-gif/pry-schedule/contents/index.html';
+  const apiUrl=`https://api.github.com/repos/shuto-gif/${repoName}/contents/index.html`;
   const headers={Authorization:`token ${pat}`,'Content-Type':'application/json'};
 
   try{
     // 現在のSHAを取得
     const getRes=await fetch(apiUrl,{headers});
-    if(!getRes.ok) throw new Error('GET '+getRes.status);
+    if(!getRes.ok){
+      let errMsg='GET '+getRes.status;
+      try{
+        const err=await getRes.json();
+        errMsg=err.message||errMsg;
+      }catch{}
+      if(getRes.status===401) localStorage.removeItem('gh-pat');
+      throw new Error(errMsg);
+    }
     const {sha}=await getRes.json();
 
     // UTF-8 → base64
@@ -1506,20 +1539,24 @@ async function saveAsHtml(){
       body:JSON.stringify({message:'スケジュール更新（ブラウザ直接保存）',content,sha})
     });
     if(putRes.ok){
-      toast('GitHubに保存しました ✓');
+      toast(`${repoName} に保存しました ✓`);
     } else {
-      const err=await putRes.json();
-      if(putRes.status===401){ localStorage.removeItem('gh-pat'); }
-      throw new Error(err.message||putRes.status);
+      let errMsg=String(putRes.status);
+      try{
+        const err=await putRes.json();
+        errMsg=err.message||errMsg;
+      }catch{}
+      if(putRes.status===401) localStorage.removeItem('gh-pat');
+      throw new Error(errMsg);
     }
   }catch(e){
     console.error(e);
-    toast('API失敗 → ダウンロードに切替');
+    toast(`API失敗 → ${downloadName} をDL`);
     setTimeout(()=>{
       const blob=new Blob([html],{type:'text/html;charset=utf-8'});
       const a=document.createElement('a');
       a.href=URL.createObjectURL(blob);
-      a.download='PRY_週間スケジュール_v19_chart.html';
+      a.download=downloadName;
       a.click();
       URL.revokeObjectURL(a.href);
     },600);
